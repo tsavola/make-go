@@ -556,7 +556,10 @@ func run(task Task, cache map[*tag]struct{}) bool {
 
 // Main program.
 func Main(getTargets func() Tasks, main string, deps ...string) {
-	globalDeps = append([]string{main}, deps...)
+	if main != "" {
+		globalDeps = append(globalDeps, main)
+	}
+	globalDeps = append(globalDeps, deps...)
 
 	args := os.Args[1:]
 
@@ -586,8 +589,13 @@ func Main(getTargets func() Tasks, main string, deps ...string) {
 			metaTarget = "[TARGET]..."
 		}
 
-		fmt.Fprintf(os.Stderr, "Usage: go run %s %s [VAR=value]...\n", main, metaTarget)
-		fmt.Fprintf(os.Stderr, "       go run %s -h|--help\n", main)
+		prog := os.Args[0]
+		if main != "" {
+			prog = "go run " + main
+		}
+
+		fmt.Fprintf(os.Stderr, "Usage: %s %s [VAR=value]...\n", prog, metaTarget)
+		fmt.Fprintf(os.Stderr, "       %s -h|--help\n", prog)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Targets:")
 
