@@ -7,25 +7,63 @@ package make
 
 import (
 	"fmt"
+	"io"
+	"io/ioutil"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 )
 
-// Println prints space-separated strings and a newline.
-func Println(s ...string) {
-	fmt.Println(strings.Join(s, " "))
+const (
+	GOARCH = runtime.GOARCH
+	GOOS   = runtime.GOOS
+)
+
+// Println prints space-separated strings and a newline.  The arguments will be
+// Flatten'ed.
+func Println(strs ...interface{}) {
+	fmt.Println(strings.Join(Flatten(strs), " "))
 }
 
-// Getenv is os.Getenv with default value support.
+// Getenv is like os.Getenv(), with default value support.
 func Getenv(key, defaultValue string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return defaultValue
+}
+
+// Setenv is like os.Setenv(), but program is terminated on error.
+func Setenv(key, value string) {
+	if err := os.Setenv(key, value); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// Base is path.Base().
+func Base(filename string) string {
+	return path.Base(filename)
+}
+
+// Dir is path.Dir().
+func Dir(filename string) string {
+	return path.Dir(filename)
+}
+
+// Join is path.Join().
+func Join(elem ...string) string {
+	return path.Join(elem...)
+}
+
+// Fields is strings.Fields().
+func Fields(s string) []string {
+	return strings.Fields(s)
 }
 
 // Glob terminates program on error.  Results of multiple pattern will be
@@ -46,16 +84,63 @@ func Glob(patterns ...string) []string {
 	return results
 }
 
-// Options specified on the command-line.
-var Options = make(map[string]string)
+// Globber returns a function which globs or terminates program on error.
+// Results of multiple pattern will be concatenated.
+func Globber(patterns ...string) func() []string {
+	return func() []string {
+		return Glob(patterns...)
+	}
+}
 
-var optionAccess = make(map[string]struct{})
+// Touch file.  Directories are created as needed.
+func Touch(filename string) error {
+	os.MkdirAll(path.Dir(filename), 0777)
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
 
-// Option specified on the command-line.
-func Option(key, defaultValue string) string {
-	optionAccess[key] = struct{}{}
+// ReplaceSuffix replaces the dot-separated suffix of the filename part of a
+// path, or panics.
+func ReplaceSuffix(s, newSuffix string) string {
+	i := strings.LastIndex(s, ".")
+	if i <= 0 || strings.Contains(s[i:], "/") {
+		panic(s)
+	}
+	return s[:i] + newSuffix
+}
 
-	if value, ok := Options[key]; ok {
+// Run command.
+func Run(command ...string) error {
+	Println("Running", command)
+	cmd := exec.Command(command[0], command[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// RunIO command.
+func RunIO(input io.Reader, command ...string) (output []byte, err error) {
+	cmd := exec.Command(command[0], command[1:]...)
+	cmd.Stdin = input
+	cmd.Stderr = os.Stderr
+	return cmd.Output()
+}
+
+// Vars specified on the command-line.
+var Vars = make(map[string]string)
+var varDefaults = make(map[string]string)
+
+// Getvar specified on the command-line.
+func Getvar(key, defaultValue string) string {
+	if value, exist := varDefaults[key]; exist && value != defaultValue {
+		panic(fmt.Sprintf("Variable %s accessed with different default values", key))
+	}
+	varDefaults[key] = defaultValue
+
+	if value, ok := Vars[key]; ok {
 		return value
 	}
 	return defaultValue
@@ -63,7 +148,8 @@ func Option(key, defaultValue string) string {
 
 // Flatten strings and string slices into single string slice.  Flatten("foo",
 // []string{"bar", "baz"}) returns []string{"foo", "bar", "baz"}.  Flatten will
-// panic if called with a type that is not string, []string or []interface{}.
+// panic if called with a type that is not string, []string, func() []string or
+// []interface{}.
 func Flatten(strings ...interface{}) []string {
 	return flatten(nil, strings)
 }
@@ -79,6 +165,11 @@ func flatten(dest []string, strings []interface{}) []string {
 				dest = append(dest, s)
 			}
 
+		case func() []string:
+			for _, s := range x() {
+				dest = append(dest, s)
+			}
+
 		case []interface{}:
 			dest = flatten(dest, x)
 
@@ -90,40 +181,30 @@ func flatten(dest []string, strings []interface{}) []string {
 	return dest
 }
 
+// Flattener is a lazy version of Flatten.
+func Flattener(strings ...interface{}) func() []string {
+	return func() []string {
+		return Flatten(strings)
+	}
+}
+
 // TargetDefault tasks.
 func TargetDefault(name string, tasks ...Task) Task {
 	return Task{
-		Name:    name,
-		Default: true,
-		Tasks:   tasks,
-		tag:     new(tag),
+		name:      name,
+		isDefault: true,
+		tasks:     tasks,
+		tag:       new(tag),
 	}
 }
 
 // Target tasks.
 func Target(name string, tasks ...Task) Task {
 	return Task{
-		Name:  name,
-		Tasks: tasks,
+		name:  name,
+		tasks: tasks,
 		tag:   new(tag),
 	}
-}
-
-// Targets slice.
-type Targets []Task
-
-// TargetDefault tasks.
-func (ts *Targets) TargetDefault(name string, tasks ...Task) Task {
-	t := TargetDefault(name, tasks...)
-	*ts = append(*ts, t)
-	return t
-}
-
-// Target tasks.
-func (ts *Targets) Target(name string, tasks ...Task) Task {
-	t := Target(name, tasks...)
-	*ts = append(*ts, t)
-	return t
 }
 
 // Command task.
@@ -139,26 +220,135 @@ func System(commandline string) Task {
 // Func task.
 func Func(f func() error) Task {
 	return Task{
-		Func: f,
-		tag:  new(tag),
+		function: f,
+		tag:      new(tag),
 	}
 }
 
 // If task.
 func If(cond func() bool, tasks ...Task) Task {
 	return Task{
-		Tasks: tasks,
-		Cond:  cond,
+		tasks: tasks,
+		cond:  cond,
 		tag:   new(tag),
 	}
 }
 
-// Join tasks.
-func Join(tasks ...Task) Task {
+// Group tasks.
+func Group(tasks ...Task) Task {
 	return Task{
-		Tasks: tasks,
+		tasks: tasks,
 		tag:   new(tag),
 	}
+}
+
+// Directory creation task.
+func Directory(dirpath string) Task {
+	return Func(func() error {
+		return os.MkdirAll(dirpath, 0777)
+	})
+}
+
+// DirectoryOf creation task.
+func DirectoryOf(filename string) Task {
+	return Directory(path.Dir(filename))
+}
+
+// Removal task.  Tries to os.RemoveAll the directory trees, and returns the
+// first error.
+func Removal(directories ...string) Task {
+	return Func(func() (err error) {
+		for _, path := range directories {
+			if e := os.RemoveAll(path); err == nil {
+				err = e
+			}
+		}
+		return
+	})
+}
+
+// Installation task.
+func Installation(destName, sourceName string, executable bool) Task {
+	return Func(func() error {
+		return Install(destName, sourceName, executable)
+	})
+}
+
+// Install file.
+func Install(destination, sourceName string, executable bool) error {
+	destName := destination
+	if strings.HasSuffix(destName, "/") {
+		destName = Join(destName, Base(sourceName))
+	}
+
+	source, err := os.Open(sourceName)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	return InstallData(destName, source, executable)
+}
+
+// InstallData file.
+func InstallData(destName string, source io.Reader, executable bool) error {
+	Println("Installing", destName)
+
+	dir := Dir(destName)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	temp := Base(destName) + ".*"
+	if !strings.HasPrefix(temp, ".") {
+		temp = "." + temp
+	}
+
+	var (
+		ok     bool
+		closed bool
+	)
+
+	dest, err := ioutil.TempFile(dir, temp)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if !ok {
+			os.Remove(dest.Name())
+		}
+		if !closed {
+			dest.Close()
+		}
+	}()
+
+	if _, err := io.Copy(dest, source); err != nil {
+		return err
+	}
+
+	var perm os.FileMode = 0644
+	if executable {
+		perm = 0755
+	}
+	if err := dest.Chmod(perm); err != nil {
+		return err
+	}
+
+	if err := dest.Sync(); err != nil {
+		return err
+	}
+
+	err = dest.Close()
+	closed = true
+	if err != nil {
+		return err
+	}
+
+	if err := os.Rename(dest.Name(), destName); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Env variables.
@@ -167,8 +357,8 @@ type Env map[string]string
 // Command task.
 func (env Env) Command(command ...interface{}) Task {
 	return Task{
-		Command: Flatten(command),
-		Env:     env,
+		command: Flatten(command),
+		env:     env,
 		tag:     new(tag),
 	}
 }
@@ -176,8 +366,8 @@ func (env Env) Command(command ...interface{}) Task {
 // System task.
 func (env Env) System(commandline string) Task {
 	return Task{
-		Command: strings.Fields(commandline),
-		Env:     env,
+		command: strings.Fields(commandline),
+		env:     env,
 		tag:     new(tag),
 	}
 }
@@ -224,8 +414,10 @@ func Any(conds ...func() bool) func() bool {
 	}
 }
 
+var globalDeps []string
+
 // Outdated condition.
-func Outdated(target string, sources ...string) func() bool {
+func Outdated(target string, sources func() []string) func() bool {
 	return func() bool {
 		info, err := os.Stat(target)
 		if err != nil {
@@ -234,7 +426,13 @@ func Outdated(target string, sources ...string) func() bool {
 
 		targetTime := info.ModTime()
 
-		for _, source := range sources {
+		deps := globalDeps
+		if sources != nil {
+			deps = append([]string(nil), deps...)
+			deps = append(deps, sources()...)
+		}
+
+		for _, source := range deps {
 			info, err := os.Stat(source)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s dependency %s: %v\n", target, source, err)
@@ -250,127 +448,180 @@ func Outdated(target string, sources ...string) func() bool {
 	}
 }
 
+// Thunk returns a function which returns the string in a slice.
+func Thunk(strings ...string) func() []string {
+	return func() []string {
+		return strings
+	}
+}
+
 type tag struct {
 	dummy func()
 }
 
 // Task to run.
 type Task struct {
-	Name    string
-	Default bool
-	Tasks   []Task
-	Command []string
-	Env     Env
-	Func    func() error
-	Cond    func() bool
+	name      string
+	isDefault bool
+	tasks     []Task
+	command   []string
+	env       Env
+	function  func() error
+	cond      func() bool
 
 	tag *tag
 }
 
-// If returns conditional version of task.
-func (task Task) If(cond func() bool) Task {
-	task.Cond = cond
-	return task
-}
-
 func (task Task) commandline() string {
 	var cmd []string
-	for _, s := range task.Command {
+	for _, s := range task.command {
 		cmd = append(cmd, maybeQuote(s))
 	}
 	line := strings.Join(cmd, " ")
-	if len(task.Env) > 0 {
-		line = task.Env.String() + " " + line
+	if len(task.env) > 0 {
+		line = task.env.String() + " " + line
 	}
 	return line
 }
 
-func run(task Task, cache map[*tag]struct{}) {
+func (task Task) environ() []string {
+	if task.env == nil {
+		return nil
+	}
+
+	e := os.Environ()
+	for k, v := range task.env {
+		e = append(e, k+"="+v)
+	}
+
+	return e
+}
+
+// Tasks slice.
+type Tasks []Task
+
+// Add task at the end of the slice.  Returns a copy.
+func (ptr *Tasks) Add(task Task) Task {
+	*ptr = append(*ptr, task)
+	return task
+}
+
+func run(task Task, cache map[*tag]struct{}) bool {
 	if task.tag == nil {
 		fmt.Fprintln(os.Stderr, "Task values must not be created directly")
 		os.Exit(1)
 	}
 	if _, done := cache[task.tag]; done {
-		return
+		return false
 	}
 	cache[task.tag] = struct{}{}
 
-	if task.Cond != nil && !task.Cond() {
-		return
+	if task.cond != nil && !task.cond() {
+		return false
 	}
 
-	for _, subtask := range task.Tasks {
-		run(subtask, cache)
+	var worked bool
+
+	for _, subtask := range task.tasks {
+		if run(subtask, cache) {
+			worked = true
+		}
 	}
 
-	if len(task.Command) > 0 {
+	if len(task.command) > 0 {
 		Println("Running", task.commandline())
-
-		cmd := exec.Command(task.Command[0], task.Command[1:]...)
+		cmd := exec.Command(task.command[0], task.command[1:]...)
+		cmd.Env = task.environ()
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+
+		worked = true
 	}
 
-	if task.Func != nil {
-		if err := task.Func(); err != nil {
+	if task.function != nil {
+		if err := task.function(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+
+		worked = true
 	}
+
+	return worked
 }
 
 // Main program.
-func Main(getTargets func() Targets) {
+func Main(getTargets func() Tasks, main string, deps ...string) {
+	globalDeps = append([]string{main}, deps...)
+
 	args := os.Args[1:]
 
 	for _, arg := range args {
 		if strings.Contains(arg, "=") && !strings.HasPrefix(arg, "-") {
 			ss := strings.SplitN(arg, "=", 2)
-			Options[ss[0]] = ss[1]
+			Vars[ss[0]] = ss[1]
 		}
 	}
 
 	available := getTargets()
 	defaults := validateTargets(available)
 
-	usage := func(exitcode int) {
-		progname := "go run make.go"
+	for _, arg := range args {
+		if strings.Contains(arg, "=") && !strings.HasPrefix(arg, "-") {
+			ss := strings.SplitN(arg, "=", 2)
+			if _, ok := varDefaults[ss[0]]; !ok {
+				fmt.Fprintln(os.Stderr, "Unknown variable:", ss[0])
+				os.Exit(2)
+			}
+		}
+	}
 
+	usage := func(exitcode int) {
 		metaTarget := "target"
 		if defaults {
-			metaTarget = "[target...]"
+			metaTarget = "[TARGET]..."
 		}
 
-		fmt.Fprintf(os.Stderr, "Usage: %s %s [OPTION=value...]\n", progname, metaTarget)
-		fmt.Fprintf(os.Stderr, "       %s -h|--help\n", progname)
+		fmt.Fprintf(os.Stderr, "Usage: go run %s %s [VAR=value]...\n", main, metaTarget)
+		fmt.Fprintf(os.Stderr, "       go run %s -h|--help\n", main)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Targets:")
 
 		for _, task := range available {
-			if task.Name != "" {
-				if task.Default {
-					fmt.Fprintf(os.Stderr, "  %s (default)\n", task.Name)
+			if task.name != "" {
+				if task.isDefault {
+					fmt.Fprintf(os.Stderr, "  %s (default)\n", task.name)
 				} else {
-					fmt.Fprintf(os.Stderr, "  %s\n", task.Name)
+					fmt.Fprintf(os.Stderr, "  %s\n", task.name)
 				}
 			}
 		}
 
-		if len(optionAccess) > 0 {
+		if len(varDefaults) > 0 {
 			fmt.Fprintln(os.Stderr)
-			fmt.Fprintln(os.Stderr, "Options:")
+			fmt.Fprintln(os.Stderr, "Variables:")
 
 			var names []string
-			for name := range optionAccess {
+			for name := range varDefaults {
 				names = append(names, name)
 			}
 			sort.Strings(names)
+
 			for _, name := range names {
-				fmt.Fprintf(os.Stderr, "  %s\n", name)
+				value, found := Vars[name]
+				if !found {
+					value = varDefaults[name]
+				}
+
+				if value == "" {
+					fmt.Fprintf(os.Stderr, "  %s\n", name)
+				} else {
+					fmt.Fprintf(os.Stderr, "  %s (%s)\n", name, value)
+				}
 			}
 		}
 
@@ -400,10 +651,10 @@ func Main(getTargets func() Targets) {
 	found := make(map[string]struct{})
 
 	for _, task := range available {
-		_, ok := names[task.Name]
-		if ok || (len(names) == 0 && task.Default) {
+		_, ok := names[task.name]
+		if ok || (len(names) == 0 && task.isDefault) {
 			targets = append(targets, task)
-			found[task.Name] = struct{}{}
+			found[task.name] = struct{}{}
 		}
 	}
 
@@ -416,7 +667,9 @@ func Main(getTargets func() Targets) {
 
 	cache := make(map[*tag]struct{})
 	for _, task := range targets {
-		run(task, cache)
+		if !run(task, cache) {
+			fmt.Println("Nothing to be done for", task.name)
+		}
 	}
 
 	os.Exit(0)
@@ -426,19 +679,19 @@ func validateTargets(targets []Task) (defaults bool) {
 	names := make(map[string]struct{})
 
 	for _, task := range targets {
-		if task.Default {
+		if task.isDefault {
 			defaults = true
 		}
 
-		if task.Name != "" {
-			if task.Name == "help" {
-				panic(task.Name)
+		if task.name != "" {
+			if task.name == "help" {
+				panic(task.name)
 			}
 
-			if _, exist := names[task.Name]; exist {
-				panic(task.Name)
+			if _, exist := names[task.name]; exist {
+				panic(task.name)
 			}
-			names[task.Name] = struct{}{}
+			names[task.name] = struct{}{}
 		}
 	}
 
