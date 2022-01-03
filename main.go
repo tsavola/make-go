@@ -66,6 +66,12 @@ func Fields(s string) []string {
 	return strings.Fields(s)
 }
 
+// Exists path?
+func Exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil || !os.IsNotExist(err)
+}
+
 // Glob terminates program on error.  Results of multiple pattern will be
 // concatenated.
 func Glob(patterns ...string) []string {
@@ -445,6 +451,13 @@ func Outdated(target string, sources func() []string) func() bool {
 		}
 
 		return false
+	}
+}
+
+// Missing condition.
+func Missing(path string) func() bool {
+	return func() bool {
+		return !Exists(path)
 	}
 }
 
