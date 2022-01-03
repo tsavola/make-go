@@ -720,9 +720,35 @@ func validateTargets(targets []Task) (defaults bool) {
 }
 
 func maybeQuote(s string) string {
-	q := strconv.Quote(s)
-	if strings.Contains(s, " ") || len(s) != len(q)-2 {
-		return q
+	if strings.Contains(s, `'`) {
+		return strconv.Quote(s)
 	}
-	return s
+
+	switch strings.Count(s, `"`) {
+	case 0:
+		space := strings.Index(s, ` `)
+		if space < 0 {
+			return s
+		}
+
+		equal := strings.Index(s, `=`)
+		if equal < 0 || equal > space {
+			return `"` + s + `"`
+		}
+
+		return s[:equal+1] + `"` + s[equal+1:] + `"`
+
+	case 2:
+		beg := strings.IndexAny(s, `" `)
+		if i := strings.Index(s, `=`); i >= 0 && i < beg {
+			beg = i + 1
+		}
+
+		end := strings.LastIndexAny(s, `" `) + 1
+
+		return s[:beg] + `'` + s[beg:end] + `'` + s[end:]
+
+	default:
+		return `'` + s + `'`
+	}
 }
