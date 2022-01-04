@@ -72,6 +72,18 @@ func Exists(path string) bool {
 	return err == nil || !os.IsNotExist(err)
 }
 
+// LookPath is like exec.LookPath(), but the first argument that is found is
+// returned on success (not the expanded path).  Empty string is returned on
+// error.
+func LookPath(executables ...string) string {
+	for _, file := range executables {
+		if path, err := exec.LookPath(file); err == nil && path != "" {
+			return file
+		}
+	}
+	return ""
+}
+
 // Glob terminates program on error.  Results of multiple pattern will be
 // concatenated.
 func Glob(patterns ...string) []string {
