@@ -172,6 +172,14 @@ func Flatten(strings ...interface{}) []string {
 	return flatten(nil, strings)
 }
 
+// Wrap is like Flatten, but the first argument is not included if it's empty.
+func Wrap(optional string, strings ...interface{}) []string {
+	if optional != "" {
+		strings = append([]interface{}{optional}, strings...)
+	}
+	return flatten(nil, strings)
+}
+
 func flatten(dest []string, strings []interface{}) []string {
 	for _, x := range strings {
 		switch x := x.(type) {
@@ -228,6 +236,11 @@ func Target(name string, tasks ...Task) Task {
 // Command task.
 func Command(command ...interface{}) Task {
 	return Env(nil).Command(command...)
+}
+
+// CommandWrap task.
+func CommandWrap(optionalWrapper string, command ...interface{}) Task {
+	return Env(nil).CommandWrap(optionalWrapper, command...)
 }
 
 // System task.
@@ -376,6 +389,15 @@ type Env map[string]string
 func (env Env) Command(command ...interface{}) Task {
 	return Task{
 		command: Flatten(command),
+		env:     env,
+		tag:     new(tag),
+	}
+}
+
+// CommandWrap task.
+func (env Env) CommandWrap(optional string, command ...interface{}) Task {
+	return Task{
+		command: Wrap(optional, command),
 		env:     env,
 		tag:     new(tag),
 	}
