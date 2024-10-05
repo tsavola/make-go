@@ -7,16 +7,36 @@ Add file `make.go` to your project root:
 
 ```go
 //go:build ignore
-// +build ignore
 
 package main
 
-import . "import.name/make"
+import (
+	. "import.name/make"
+)
 
-func main() { Main(targets, "make.go", "go.mod") }
+func main() {
+	Main(targets,
+		"make.go", // These files are universal dependencies: if they
+		"go.mod",  // are modified, all targets need to be rebuilt.
+	)
+}
 
 func targets() (targets Tasks) {
+	var (
+		CC = Getvar("CC", "gcc")
+	)
+
+	sources := Globber("src/*.c")
+
+	myTarget := targets.Add(Target("mytarget",
+		If(Outdated("mytarget", sources),
+			Command(CC, "-c", "-o", "example.o", sources),
+			Command(CC, "-o", "mytarget", "example.o"),
+		),
+	))
+
 	// ...
+
 	return
 }
 ```
@@ -24,15 +44,12 @@ func targets() (targets Tasks) {
 Build your project by invoking:
 
 	go run make.go
-	go run make.go my-target
-	go run make.go my-target another-target FOO=bar BAZ=quux
+	go run make.go mytarget
+	go run make.go mytarget another-target FOO=bar BAZ=quux
 
 Show usage and list available targets and variables:
 
 	go run make.go -h
 
-See a [practical example](https://github.com/gate-computer/gate/blob/master/make.go).
-If, after eyeballing that for a while, you wonder whether some feature is
-supported, the answer is probably no (unless you're willing to implement it
-yourself in Go).
+See a [practical example](https://github.com/gate-computer/gate/blob/main/make.go).
 
